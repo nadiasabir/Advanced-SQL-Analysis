@@ -1,0 +1,526 @@
+/*===========================================================================================================================================================================================================================================================================================================================================================================================================================
+ Student name  : Rediet Merid
+ Project theme : Seasonal internet sales
+ Database      : AdventureWorksDW2022 (SQL Server)
+
+ PART 1 - Analytical question
+
+ How do Adventure Works internet sales vary across months and quarters, and how
+ consistent are these patterns across products, categories and customer
+ groups? Explore sales revenue, units sold, orders and product mix over
+ comparable periods, then recommend how the business should plan seasonal
+ sales activity.
+=====================================================================================================================================================================================================================================================================================================================================================================================================================================================*/
+
+/*=========================================================================================================================================================================================================================================================================================================================================================================================================================================================
+ * Questions    1. How do revenue, units and orders change month by month, and how does each
+                   month compare with the same month a year earlier?
+                2. Is growth seen in only one quarter, or does growth differ in each quarter?
+                3. What share of each year's revenue falls in each month? Do the months have a
+                   similar share every year (a consistent seasonal pattern)?
+                4. Does the product category mix change by quarter?
+                5. Are the best-selling products the same in every quarter?
+                6. Do different age groups follow the same quarterly pattern?
+                7. Do men and women follow the same quarterly pattern?
+
+ * Metrics :DATETRUNC(month) groups dates into months 
+            AOV = revenue / orders;
+            items per basket = units / orders. 
+            LAG(..., 12) looks back 12
+            months (the same month last year) to calculate YoY_Pct (Year on year %)
+
+   
+ Tables used for part 1:
+   FactInternetSales        
+   DimProduct              
+   DimProductSubcategory    
+   DimProductCategory       
+   DimCustomer              
+====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================*/
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 1: Monthly revenue, Total_units_Sold, Total_orders
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+
+WITH Monthly_Order AS (
+    SELECT
+        CAST(DATETRUNC(month, OrderDate) AS DATE) AS Ordered_Month,
+        SUM(SalesAmount)                          AS Total_Revenue,
+        SUM(OrderQuantity)                        AS Total_Units_Sold,
+        COUNT(DISTINCT SalesOrderNumber)          AS Total_Orders
+    FROM AdventureWorksDW2022.dbo.FactInternetSales
+    WHERE OrderDate >= '2011-01-01' AND OrderDate < '2014-01-01'
+    GROUP BY DATETRUNC(month, OrderDate)
+)
+SELECT *,
+    ROUND(Total_Revenue / NULLIF(Total_Orders, 0), 2)     AS AOV,
+    ROUND(1.00 * Total_Units_Sold / NULLIF(Total_Orders, 0), 2) AS Items_Per_Basket,
+    LAG(Total_Revenue, 12) OVER (ORDER BY Ordered_Month)    AS Last_Year_Same_Month,
+    ROUND((Total_Revenue / NULLIF(LAG(Total_Revenue, 12) OVER (ORDER BY Ordered_Month), 0) - 1) * 100, 2) AS YoY_Pct
+FROM Monthly_Order
+ORDER BY Ordered_Month;
+
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 2: To compare quarters performance and to undentify the peak season
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+
+WITH Quarterly_Order AS (
+    SELECT
+        CAST(DATETRUNC(quarter, OrderDate) AS DATE) AS Quarter_Order_Start,
+        SUM(SalesAmount)                            AS Total_Revenue,
+        SUM(OrderQuantity)                          AS Units_Sold,
+        COUNT(DISTINCT SalesOrderNumber)            AS Total_Orders
+    FROM AdventureWorksDW2022.dbo.FactInternetSales
+    WHERE OrderDate >= '2011-01-01' AND OrderDate < '2014-01-01'
+    GROUP BY DATETRUNC(quarter, OrderDate)
+)
+SELECT *,
+    ROUND(Total_Revenue / NULLIF(Total_Orders, 0), 2) AS AOV,
+    LAG(Total_Revenue) OVER (ORDER BY Quarter_Order_Start)  AS Quarter_Previous_Revenue,
+    ROUND((Total_Revenue / NULLIF(LAG(Total_Revenue) OVER (ORDER BY Quarter_Order_Start), 0) - 1) * 100, 2) AS QoQ_Pct
+FROM Quarterly_Order
+ORDER BY Quarter_Order_Start;
+
+-- ========================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 3: To see the pattern is consistent when years gose by and to seasonality share 
+-- ========================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Monthly_Order AS (
+    SELECT
+        YEAR(OrderDate)            AS Sales_Year,
+        DATEPART(MONTH, OrderDate) AS Sales_Month,
+        SUM(SalesAmount)           AS Total_Revenue
+    FROM AdventureWorksDW2022.dbo.FactInternetSales
+    WHERE OrderDate >= '2011-01-01' AND OrderDate < '2014-01-01'
+    GROUP BY YEAR(OrderDate), DATEPART(MONTH, OrderDate)
+)
+SELECT
+    Sales_Month,
+    Sales_Year,
+    ROUND(Total_Revenue, 2) AS Total_Revenue,
+    ROUND(Total_Revenue * 100.0 / SUM(Total_Revenue) OVER (PARTITION BY Sales_Year), 2) AS Pct_Of_Year
+FROM Monthly_Order
+ORDER BY Sales_Month, Sales_Year;
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 4: Mix of Product category by quarter
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+SELECT
+    YEAR(FIS.OrderDate)                  AS Sales_Year,
+    DATEPART(QUARTER, FIS.OrderDate)     AS Quarter_Sales,
+    PC.EnglishProductCategoryName        AS Product_Category,
+    ROUND(SUM(FIS.SalesAmount), 2)       AS Total_Revenue,
+    ROUND(SUM(FIS.SalesAmount) * 100.0 / NULLIF(SUM(SUM(FIS.SalesAmount)) OVER (PARTITION BY YEAR(fis.OrderDate), DATEPART(QUARTER, fis.OrderDate)), 0), 2) AS Revenue_Pct,
+    SUM(FIS.OrderQuantity)               AS Total_Units_Sold,
+    COUNT(DISTINCT FIS.SalesOrderNumber) AS Total_Orders
+FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+    ON FIS.ProductKey = P.ProductKey
+INNER JOIN AdventureWorksDW2022.dbo.DimProductSubcategory PS
+    ON P.ProductSubcategoryKey = PS.ProductSubcategoryKey
+INNER JOIN AdventureWorksDW2022.dbo.DimProductCategory PC
+    ON PS.ProductCategoryKey = PC.ProductCategoryKey
+WHERE FIS.OrderDate >= '2011-01-01' AND FIS.OrderDate < '2014-01-01'
+GROUP BY YEAR(FIS.OrderDate), DATEPART(QUARTER, FIS.OrderDate), PC.EnglishProductCategoryName
+ORDER BY Sales_Year, Quarter_Sales, Total_Revenue DESC;
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 5: To see top product in each quarter
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Product_Quarter AS (
+    SELECT
+        YEAR(FIS.OrderDate)              AS Sales_Year,
+        DATEPART(QUARTER, FIS.OrderDate) AS Sales_Quarter,
+        P.EnglishProductName             AS Product_Name,
+        SUM(FIS.SalesAmount)             AS Total_Revenue,
+        SUM(FIS.OrderQuantity)           AS Total_Units_Sold,
+        ROW_NUMBER() OVER (
+            PARTITION BY YEAR(FIS.OrderDate), DATEPART(QUARTER, FIS.OrderDate)
+            ORDER BY SUM(FIS.SalesAmount) DESC) AS R_Num
+    FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+    INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+        ON FIS.ProductKey = P.ProductKey
+    WHERE FIS.OrderDate >= '2011-01-01' AND FIS.OrderDate < '2014-01-01'
+    GROUP BY YEAR(FIS.OrderDate), DATEPART(QUARTER, FIS.OrderDate), P.EnglishProductName
+)
+SELECT Sales_Year, Sales_Quarter, R_Num, Product_Name,
+       ROUND(Total_Revenue, 2) AS Total_Revenue, Total_Units_Sold
+FROM Product_Quarter
+WHERE R_Num <= 3
+ORDER BY Sales_Year, Sales_Quarter, R_Num;
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 6: Seasonal pattern VS different age groups
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Customer_Age AS (
+    SELECT
+        FIS.SalesOrderNumber,
+        FIS.SalesAmount,
+        FIS.OrderQuantity,
+        FIS.OrderDate,
+        DATEDIFF(YEAR, C.BirthDate, FIS.OrderDate) AS Age
+    FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+    INNER JOIN AdventureWorksDW2022.dbo.DimCustomer C
+        ON FIS.CustomerKey = C.CustomerKey
+    WHERE FIS.OrderDate >= '2011-01-01' AND FIS.OrderDate < '2014-01-01'
+)
+SELECT
+    YEAR(OrderDate)              AS Sales_Year,
+    DATEPART(QUARTER, OrderDate) AS Sales_Quarter,
+    CASE
+        WHEN Age < 25 THEN 'Under 25'
+        WHEN Age < 35 THEN 'Under 35'
+        WHEN Age < 45 THEN '35-44'
+        WHEN Age < 55 THEN '45-54'
+        WHEN Age < 65 THEN '55-64'
+        ELSE '65+'
+    END AS Age_Group,
+    ROUND(SUM(SalesAmount), 2)       AS Total_Revenue,
+    SUM(OrderQuantity)               AS Total_Units_Sold,
+    COUNT(DISTINCT SalesOrderNumber) AS Total_Orders
+FROM Customer_Age
+GROUP BY
+    YEAR(OrderDate), DATEPART(QUARTER, OrderDate),
+    CASE
+        WHEN Age < 25 THEN 'Under 25'
+        WHEN Age < 35 THEN 'Under 35'
+        WHEN Age < 45 THEN '35-44'
+        WHEN Age < 55 THEN '45-54'
+        WHEN Age < 65 THEN '55-64'
+        ELSE '65+'
+    END
+ORDER BY Sales_Year, Sales_Quarter, Age_Group;
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- PART 1 - QUERY 7: Seasonal pattern VS Gender 
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+SELECT
+    YEAR(FIS.OrderDate)              AS Sales_Year,
+    DATEPART(QUARTER, FIS.OrderDate) AS Sales_Quarter,
+    CASE WHEN C.Gender = 'M' THEN 'Male'
+         WHEN C.Gender = 'F' THEN 'Female'
+         ELSE 'Unknown' END          AS Gender_Group,
+    ROUND(SUM(FIS.SalesAmount), 2)   AS Total_Revenue,
+    ROUND(SUM(FIS.SalesAmount) * 100.0 /
+          NULLIF(SUM(SUM(FIS.SalesAmount)) OVER (
+                 PARTITION BY YEAR(FIS.OrderDate), DATEPART(QUARTER, FIS.OrderDate)), 0), 2) AS Revenue_Pct,
+    SUM(FIS.OrderQuantity)           AS Units_Sold,
+    COUNT(DISTINCT FIS.SalesOrderNumber) AS Total_Orders
+FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+INNER JOIN AdventureWorksDW2022.dbo.DimCustomer C
+    ON FIS.CustomerKey = C.CustomerKey
+WHERE FIS.OrderDate >= '2011-01-01' AND FIS.OrderDate < '2014-01-01'
+GROUP BY
+    YEAR(FIS.OrderDate), DATEPART(QUARTER, FIS.OrderDate),
+    CASE WHEN C.Gender = 'M' THEN 'Male'
+         WHEN C.Gender = 'F' THEN 'Female'
+         ELSE 'Unknown' END
+ORDER BY Sales_Year, Sales_Quarter, Gender_Group;
+
+/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Only 2011 to 2013 have a full year of data, while 2010 and 2014 are partial years. 
+To compare seasonality fairly, the analysis is based on 2011 to 2013. Revenue grew 
+over that period and got stronger as each year went on. In quarter 2013 revenue was 4.37M, 
+about 10% higher than the previous quarter. In quarter 4 2013 it reached 5.33M, incresed to 
+22% increase. 2011 and 2013 followed a steady pattern, with revenue rising month by month. 
+2012 was less even, with some ups and downs in the first three quarters before sales picked
+up in the last quarter. Quarter 4 was the strongest quarter in every year, and Quarter 1 was the weakest 
+in 2011 and 2012.
+
+Bikes bring in most of the revenue in every quarter, and most of all in Quarter 4.
+Accessories and Clothing add orders and units but very little revenue. The top products 
+stay mostly the same from quarter to quarter. Age and gender groups also follow the same 
+quarterly shape, so the seasonality comes from the time of year, not from one customer group.
+
+Recommendation : Stock Bikes early. Build up Bike inventory before Quarter 4, and before the other strong months, 
+so there is no shortage when demand peaks. Run campaigns ahead of the peak. Start marketing at the end of 
+the previous quarter or the very beginning of the strong one, not in the middle of it.
+Bundle Accessories with Bikes. Accessories and Clothing sell in volume but earn little, 
+so offering them with a Bike raises the value of each order.
+Keep promotions light in weak months. Quarter 1 is the slowest time, so large discounts there are unlikely to pay off.
+Plan for the whole customer base. Because the pattern is the same across age and gender groups, one seasonal
+plan can work for everyone, and there is no need for a separate plan for each group.
+-------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+/*====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+ PART 2 - AD HOC TASK 1 (stakeholder: Inventory Planning team)
+          Find products with high revenue but low quantity, and products with
+          high quantity but low revenue, to improve inventory allocation.
+
+
+ Approach: To compare every product with the AVE.product revenue.
+           To see AVE.product quantity.
+           To use full period (2011, 2012, 2013), Since 2010 and 2014 has partial year.
+ Matrice:  Total_Quantity = SUM(OrderQuantity)        
+           Total_Revenue= SUM(SalesAmount)         
+           Total_Profit= SUM(SalesAmount) - SUM(TotalProductCost) 
+           Ranking:  Revenue_Rank, Quantity_Rank,
+           AVG Total_Revenue)  
+           AVG(Total_Quantity) 
+====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================*/
+
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- AD HOC 1 - QUERY 1.1: classification product
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Product_Sales AS (
+    SELECT
+        P.EnglishProductName          AS Product_Name,
+        PC.EnglishProductCategoryName AS Product_Category,
+        SUM(FIS.OrderQuantity)        AS Total_Quantity,
+        SUM(FIS.SalesAmount)          AS Total_Revenue,
+        SUM(FIS.SalesAmount) - SUM(FIS.TotalProductCost) AS Total_Profit
+    FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+    INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+        ON FIS.ProductKey = P.ProductKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductSubcategory PS
+        ON P.ProductSubcategoryKey = PS.ProductSubcategoryKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductCategory PC
+        ON PS.ProductCategoryKey = PC.ProductCategoryKey
+    GROUP BY P.EnglishProductName, PC.EnglishProductCategoryName
+),
+Ranked AS (
+    SELECT *,
+        RANK() OVER (ORDER BY Total_Revenue DESC)  AS Revenue_Rank,
+        RANK() OVER (ORDER BY Total_Quantity DESC) AS Quantity_Rank,
+        AVG(Total_Revenue)  OVER () AS Avg_Revenue,
+        AVG(Total_Quantity) OVER () AS Avg_Quantity
+    FROM Product_Sales
+)
+SELECT
+    Product_Name, Product_Category, Total_Quantity,
+    ROUND(Total_Revenue, 2) AS Total_Revenue,
+    ROUND(Total_Profit, 2)  AS Total_Profit,
+    Revenue_Rank, Quantity_Rank,
+    CASE
+        WHEN Total_Revenue >= Avg_Revenue AND Total_Quantity <  Avg_Quantity THEN 'High value, low volume'
+        WHEN Total_Revenue <  Avg_Revenue AND Total_Quantity >= Avg_Quantity THEN 'High volume, low value'
+        WHEN Total_Revenue >= Avg_Revenue AND Total_Quantity >= Avg_Quantity THEN 'Star (both high)'
+        ELSE 'Low on both'
+    END AS Product_Group
+FROM Ranked
+ORDER BY Total_Revenue DESC;
+
+
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- AD HOC 1 - QUERY 1.2: Classification, products and revenue per group
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Product_Sales AS (
+    SELECT
+        P.EnglishProductName AS Product_Name,
+        SUM(FIS.OrderQuantity) AS Total_Quantity,
+        SUM(FIS.SalesAmount)   AS Total_Revenue
+    FROM AdventureWorksDW2022.dbo.FactInternetSales fis
+    INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+        ON FIS.ProductKey = P.ProductKey
+    GROUP BY P.EnglishProductName
+),
+Grouped AS (
+    SELECT *,
+        CASE
+            WHEN Total_Revenue >= AVG(Total_Revenue) OVER () AND Total_Quantity <  AVG(Total_Quantity) OVER () THEN 'High value, low volume'
+            WHEN Total_Revenue <  AVG(Total_Revenue) OVER () AND Total_Quantity >= AVG(Total_Quantity) OVER () THEN 'High volume, low value'
+            WHEN Total_Revenue >= AVG(Total_Revenue) OVER () AND Total_Quantity >= AVG(Total_Quantity) OVER () THEN 'Star (both high)'
+            ELSE 'Low on both'
+        END AS Product_Group
+    FROM Product_Sales
+)
+SELECT
+    Product_Group,
+    COUNT(*)                   AS Products,
+    SUM(Total_Quantity)        AS Total_Quantity,
+    ROUND(SUM(Total_Revenue), 2) AS Total_Revenue,
+    ROUND(SUM(Total_Revenue) * 100.0 / SUM(SUM(Total_Revenue)) OVER (), 2) AS Revenue_Pct
+FROM Grouped
+GROUP BY Product_Group
+ORDER BY Total_Revenue DESC;
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+AD HOC 1 -  TO INVENTORY PLANNING
+By comparing each product with the average revenue and the average quantity,
+every product is put into one of four groups:
+
+  1. High value, low volume
+  2. High volume, low value
+  3. Star products (both high)
+  4. Low on both
+
+1. High value, low volume:
+  These products sell fewer units but earn a lot per unit. They need to be kept
+  in small stock, and the stock needs to be protected so it does not run out.
+  These products are mostly expensive, and in this case they are all bikes.
+  Their total revenue was $16.09M, which is 54.8% of total revenue.
+
+2. High volume, low value:
+  These products sell in large numbers but earn little. They need to be stocked
+  efficiently, and we should not hold a lot of cash in them or fill the
+  warehouse with them. These products are accessories and clothing. Their total
+  revenue was $0.67M, which is 2.27% of total revenue.
+
+3. Star products (both high):
+  These products need to be well stocked and always available, especially
+  before Quarter 4. Their total revenue was $7.93M, which is 27.01% of total
+  revenue.
+
+4. Low on both:
+  These products need lower stock levels, or we can consider stopping them.
+  Whenever the inventory team needs to restock these products, they should
+  first check how the groups behave by season. Their total revenue was $4.68M,
+  which is 15.93% of total revenue.
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+/*====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+ PART 2 - AD HOC TASK 2 (stakeholder: Business Intelligence team)
+          evaluate product category performance across years and identify
+          categories that are consistently growing, declining or stable.
+
+ Approach: 
+        To observe whether each category is growing, declining or stable between years.
+        To compare each year's sales with the prior year's sales, to see whether the
+        category's performance across the years is stable, growing or declining.
+ Matrice: Sales_Year,
+          Total_Revenue
+          Totals revenue per category and year
+          LAG with PARTITION BY category to get the previous year's revenue
+          Growth % and the trend label with CASE.
+====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================*/
+
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- AD HOC 2 - QUERY 2.1: Category revenue by year, growth % and trend label
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Category_Year AS (
+    SELECT
+        PC.EnglishProductCategoryName AS Product_Category,
+        YEAR(FIS.OrderDate)           AS Sales_Year,
+        SUM(FIS.SalesAmount)          AS Total_Revenue
+    FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+    INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+        ON FIS.ProductKey = P.ProductKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductSubcategory PS
+        ON P.ProductSubcategoryKey = PS.ProductSubcategoryKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductCategory PC
+        ON PS.ProductCategoryKey = PC.ProductCategoryKey
+    WHERE YEAR(FIS.OrderDate) IN (2011, 2012, 2013)
+    GROUP BY PC.EnglishProductCategoryName, YEAR(fis.OrderDate)
+),
+With_Growth AS (
+    SELECT *,
+        LAG(Total_Revenue) OVER (PARTITION BY Product_Category ORDER BY Sales_Year) AS Previous_Year_Revenue
+    FROM Category_Year
+)
+SELECT
+    Product_Category,
+    Sales_Year,
+    ROUND(Total_Revenue, 2)         AS Total_Revenue,
+    ROUND(Previous_Year_Revenue, 2) AS Previous_Year_Revenue,
+    ROUND((1.00 * Total_Revenue / NULLIF(Previous_Year_Revenue, 0) - 1) * 100, 2) AS Growth_Pct,
+    CASE
+        WHEN Previous_Year_Revenue IS NULL THEN 'No prior year'
+        WHEN Total_Revenue > Previous_Year_Revenue * 1.05 THEN 'Growing'
+        WHEN Total_Revenue < Previous_Year_Revenue * 0.95 THEN 'Declining'
+        ELSE 'Stable'
+    END AS Trend
+FROM With_Growth
+ORDER BY Product_Category, Sales_Year;
+
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+-- AD HOC 2 - QUERY 2.2: year-on-year comparisons per category
+--- Please note that a 5% band (1.05 and 0.95) is used to see the  changes within 5% are "Stable", and larger
+-- changes are "Growing" or "Declining". The 5% is a common convention, not a fixed standard, and can be changed.
+-- ==================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+WITH Category_Year AS (
+    SELECT
+        PC.EnglishProductCategoryName AS Product_Category,
+        YEAR(FIS.OrderDate)           AS Sales_Year,
+        SUM(FIS.SalesAmount)          AS Total_Revenue
+    FROM AdventureWorksDW2022.dbo.FactInternetSales FIS
+    INNER JOIN AdventureWorksDW2022.dbo.DimProduct P
+        ON FIS.ProductKey = P.ProductKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductSubcategory PS
+        ON P.ProductSubcategoryKey = PS.ProductSubcategoryKey
+    INNER JOIN AdventureWorksDW2022.dbo.DimProductCategory PC
+        ON PS.ProductCategoryKey = PC.ProductCategoryKey
+    WHERE YEAR(FIS.OrderDate) IN (2011, 2012, 2013)
+    GROUP BY PC.EnglishProductCategoryName, YEAR(FIS.OrderDate)
+),
+With_Growth AS (
+    SELECT *,
+        LAG(Total_Revenue) OVER (PARTITION BY Product_Category ORDER BY Sales_Year) AS Previous_Year_Revenue
+    FROM Category_Year
+),
+Labelled AS (
+    SELECT Product_Category, Sales_Year,
+        CASE
+            WHEN Previous_Year_Revenue IS NULL THEN 'No prior year'
+            WHEN Total_Revenue > Previous_Year_Revenue * 1.05 THEN 'Growing'
+            WHEN Total_Revenue < Previous_Year_Revenue * 0.95 THEN 'Declining'
+            ELSE 'Stable'
+        END AS Trend
+    FROM With_Growth
+)
+SELECT
+    Product_Category,
+    SUM(CASE WHEN Trend = 'Growing'   THEN 1 ELSE 0 END) AS Years_Growing,
+    SUM(CASE WHEN Trend = 'Declining' THEN 1 ELSE 0 END) AS Years_Declining,
+    SUM(CASE WHEN Trend = 'Stable'    THEN 1 ELSE 0 END) AS Years_Stable,
+    CASE
+        WHEN SUM(CASE WHEN Trend <> 'No prior year' THEN 1 ELSE 0 END) = 0 THEN 'Not enough history'
+        WHEN SUM(CASE WHEN Trend = 'Growing'   THEN 1 ELSE 0 END) = SUM(CASE WHEN Trend <> 'No prior year' THEN 1 ELSE 0 END) THEN 'Consistently growing'
+        WHEN SUM(CASE WHEN Trend = 'Declining' THEN 1 ELSE 0 END) = SUM(CASE WHEN Trend <> 'No prior year' THEN 1 ELSE 0 END) THEN 'Consistently declining'
+        WHEN SUM(CASE WHEN Trend = 'Stable'    THEN 1 ELSE 0 END) = SUM(CASE WHEN Trend <> 'No prior year' THEN 1 ELSE 0 END) THEN 'Consistently stable'
+        ELSE 'Mixed'
+    END AS Overall_Pattern
+FROM Labelled
+GROUP BY Product_Category
+ORDER BY Product_Category;
+
+/*------------------------------------------------------------------------------------------------------------------------------------------------------
+ AD HOC 2 - Reply to BUSINESS INTELLIGENCE
+ Reply to BUSINESS INTELLIGENCE
+
+Each category's revenue was compared with the previous year for 2011-2013.
+2010 and 2014 were left out because they are partial years and would show false
+declines. The 5% band is my own choice, not a standard. It is used only to
+label each change as Growing, Declining or Stable.
+
+Results:
+- Accessories and Clothing were Growing in 2013 compared with the previous year.
+- Bikes declined by 17.47% in 2012 and then grew by 163.02% in 2013, so its
+  pattern is Mixed.
+- Accessories and Clothing have "No prior year" in 2012, and Bikes has "No prior
+  year" in 2011, so the trend in those first years cannot be judged.
+
+Recommendation: for long-term planning, consistently growing categories deserve
+investment, stable categories should be protected, and declining or mixed
+categories need a closer look at price and product mix.
+---------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+/*====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
+ PART 3 - ANALYST THINKING (no SQL; under 200 words)
+ Scenario: an online retailer's sales fell last month; the manager believes
+ marketing is responsible.
+
+The first step is to check that the drop  by comparing last month with
+the previous month and with the same month last year. The question is whether
+it is seasonality or fewer trading days, since either could explain a sudden
+drop. Next, sales are split into orders, average order value and items per
+basket. If orders fell, the problem is demand or traffic. If order value fell,
+the cause may be prices, discounts or product mix. Then the place where the
+fall happened is found: which product categories, which customer groups by age
+and gender, and new versus regular customers. If the drop is in one product,
+the cause may be stock-outs or pricing. Delivery delays, website or payment
+problems and competitor moves should also be checked.
+
+Only after this is marketing tested, by comparing clicks, traffic and
+conversion rate for both months. If traffic fell but conversion held, marketing
+is a likely cause. If traffic held but conversion fell, the cause is probably
+the website or the products.
+
+Finally, the evidence is shown to the manager so the decision rests on data.
+====================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================*/
